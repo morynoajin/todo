@@ -21,7 +21,20 @@ let S = {
 
 /* ========== UTILITIES ========== */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-const todayStr = () => new Date().toISOString().slice(0, 10);
+// KST(UTC+9) 기준 오늘 날짜 문자열 "YYYY-MM-DD" 반환.
+// 인수를 주면 그 Date를 KST 날짜로 변환.
+function getKSTDate(date = new Date()) {
+  return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Seoul' }).format(date);
+}
+// KST 기준 "HH:MM" 반환
+function getKSTTimeStr(d) {
+  const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+  return `${String(kst.getUTCHours()).padStart(2,'0')}:${String(kst.getUTCMinutes()).padStart(2,'0')}`;
+}
+// 날짜 문자열 "YYYY-MM-DD"를 UTC 정오로 파싱 (시간대 오차 없이 날짜 산술에 사용)
+function dateDt(dateStr) { return new Date(dateStr + 'T12:00:00Z'); }
+
+const todayStr = getKSTDate;       // 기존 호출부 호환 유지
 const nowISO = () => new Date().toISOString();
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
@@ -30,8 +43,8 @@ function fmtDate(d) {
   const [y, m, day] = d.split('-').map(Number);
   const t = todayStr();
   const dt = new Date(y, m - 1, day);
-  const tom = new Date(); tom.setDate(tom.getDate() + 1);
-  const tomStr = tom.toISOString().slice(0, 10);
+  const tomDt = dateDt(t); tomDt.setUTCDate(tomDt.getUTCDate() + 1);
+  const tomStr = tomDt.toISOString().slice(0, 10);
   if (d === t) return '오늘';
   if (d === tomStr) return '내일';
   const now = new Date();
@@ -423,8 +436,8 @@ function renderDetail() {
 function fmtReminder(r) {
   if (!r) return '';
   const d = new Date(r);
-  const dateStr = fmtDate(d.toISOString().slice(0, 10));
-  const time = d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+  const dateStr = fmtDate(getKSTDate(d));
+  const time = getKSTTimeStr(d);
   return `${dateStr} ${time}`;
 }
 
@@ -511,22 +524,22 @@ function createRepeatTask(task) {
 
 function getNextDate(d, repeat, interval, unit) {
   if (!d) return null;
-  const dt = new Date(d + 'T00:00:00');
-  if (repeat === 'daily')   dt.setDate(dt.getDate() + 1);
-  else if (repeat === 'weekly')  dt.setDate(dt.getDate() + 7);
-  else if (repeat === 'monthly') dt.setMonth(dt.getMonth() + 1);
+  const dt = dateDt(d); // UTC 정오로 파싱해 시간대 오차 방지
+  if (repeat === 'daily')        dt.setUTCDate(dt.getUTCDate() + 1);
+  else if (repeat === 'weekly')  dt.setUTCDate(dt.getUTCDate() + 7);
+  else if (repeat === 'monthly') dt.setUTCMonth(dt.getUTCMonth() + 1);
   else if (repeat === 'custom') {
-    if (unit === 'days')   dt.setDate(dt.getDate() + interval);
-    else if (unit === 'weeks')  dt.setDate(dt.getDate() + interval * 7);
-    else if (unit === 'months') dt.setMonth(dt.getMonth() + interval);
+    if (unit === 'days')        dt.setUTCDate(dt.getUTCDate() + interval);
+    else if (unit === 'weeks')  dt.setUTCDate(dt.getUTCDate() + interval * 7);
+    else if (unit === 'months') dt.setUTCMonth(dt.getUTCMonth() + interval);
   }
   return dt.toISOString().slice(0, 10);
 }
 
 function shiftReminder(remISO, oldDate, newDate) {
   if (!remISO || !oldDate || !newDate) return null;
-  const old = new Date(oldDate + 'T00:00:00');
-  const nxt = new Date(newDate + 'T00:00:00');
+  const old = dateDt(oldDate);
+  const nxt = dateDt(newDate);
   const diff = nxt - old;
   return new Date(new Date(remISO).getTime() + diff).toISOString();
 }
@@ -884,10 +897,13 @@ function renderCalendar() {
       onclick="pickDate('${dateStr}')">${d}</div>`;
   }
 
-  const td = new Date(); td.setDate(td.getDate() + 1);
-  const tomStr = td.toISOString().slice(0,10);
-  const nw = new Date(); nw.setDate(nw.getDate() + 7 - nw.getDay() + 1);
-  const nwStr = nw.toISOString().slice(0,10);
+  const todayDt = dateDt(t);
+  const tomDt = new Date(todayDt); tomDt.setUTCDate(tomDt.getUTCDate() + 1);
+  const tomStr = tomDt.toISOString().slice(0, 10);
+  const dow = todayDt.getUTCDay(); // 0=일, 1=월 ...
+  const daysToNextMon = dow === 0 ? 1 : 8 - dow;
+  const nwDt = new Date(todayDt); nwDt.setUTCDate(nwDt.getUTCDate() + daysToNextMon);
+  const nwStr = nwDt.toISOString().slice(0, 10);
 
   document.getElementById('cal-content').innerHTML = `
     <div class="cal-header">
@@ -939,10 +955,8 @@ function showReminderModal(taskId) {
   if (!task) return;
 
   const existing = task.reminder ? new Date(task.reminder) : null;
-  const dateVal = existing ? existing.toISOString().slice(0,10) : todayStr();
-  const timeVal = existing
-    ? `${String(existing.getHours()).padStart(2,'0')}:${String(existing.getMinutes()).padStart(2,'0')}`
-    : '09:00';
+  const dateVal = existing ? getKSTDate(existing) : todayStr();
+  const timeVal = existing ? getKSTTimeStr(existing) : '09:00';
 
   showModal(`<div class="modal-header"><span>알림 설정</span><button onclick="closeModal()" class="icon-btn">✕</button></div>
     <div class="modal-body">
@@ -962,7 +976,7 @@ function submitReminder(taskId) {
   const date = document.getElementById('rem-date')?.value;
   const time = document.getElementById('rem-time')?.value;
   if (!date || !time) return;
-  const iso = new Date(`${date}T${time}:00`).toISOString();
+  const iso = new Date(`${date}T${time}:00+09:00`).toISOString();
   updateTask(taskId, { reminder: iso });
   closeModal();
   requestNotifPermission();
@@ -1135,10 +1149,10 @@ function init() {
   checkMissedReminders();
   registerSW();
 
-  // My Day refresh at midnight
-  const now = new Date();
-  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-  setTimeout(() => { render(); scheduleAllReminders(); }, midnight - now);
+  // KST 자정에 My Day 목록 갱신 (KST 다음날 00:00+09:00 = UTC 전날 15:00)
+  const tomorrowKST = dateDt(todayStr()); tomorrowKST.setUTCDate(tomorrowKST.getUTCDate() + 1);
+  const kstMidnight = new Date(tomorrowKST.toISOString().slice(0, 10) + 'T00:00:00+09:00');
+  setTimeout(() => { render(); scheduleAllReminders(); }, kstMidnight - new Date());
 }
 
 document.addEventListener('DOMContentLoaded', init);

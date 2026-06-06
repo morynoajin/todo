@@ -2,8 +2,8 @@
   "name": "할 일 - Todo PWA",
   "short_name": "할 일",
   "description": "Microsoft To Do 스타일 할 일 관리 앱",
-  "start_url": "/",
-  "scope": "/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "orientation": "portrait-primary",
   "background_color": "#2564CF",
@@ -35,7 +35,7 @@
       "name": "나의 하루",
       "short_name": "오늘",
       "description": "오늘 할 작업 보기",
-      "url": "/?view=myday",
+      "url": "./?view=myday",
       "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
     }
   ]

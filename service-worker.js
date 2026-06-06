@@ -1,10 +1,16 @@
-const CACHE = 'todo-pwa-v2';
+const CACHE = 'todo-pwa-v3';
+
+// Derive base URL from the SW's own location.
+// localhost  → 'http://localhost:5500/'
+// GitHub Pages → 'https://morynoajin.github.io/todo/'
+const BASE = new URL('./', self.location).href;
+
 const SHELL = [
-  '/',
-  '/index.html',
-  '/style.css',
-  '/app.js',
-  '/manifest.json',
+  BASE,
+  BASE + 'index.html',
+  BASE + 'style.css',
+  BASE + 'app.js',
+  BASE + 'manifest.json',
 ];
 
 /* ===== INSTALL: cache app shell ===== */
@@ -45,8 +51,8 @@ self.addEventListener('fetch', e => {
         }
         return res;
       }).catch(() => {
-        // Offline fallback: return cached index.html for navigation
-        if (e.request.mode === 'navigate') return caches.match('/index.html');
+        // Offline fallback for navigation requests
+        if (e.request.mode === 'navigate') return caches.match(BASE + 'index.html');
       });
     })
   );
@@ -57,9 +63,8 @@ async function generateIcon(size) {
   try {
     const canvas = new OffscreenCanvas(size, size);
     const ctx = canvas.getContext('2d');
-    const r = size * 0.2; // corner radius
+    const r = size * 0.2;
 
-    // Blue rounded background
     ctx.fillStyle = '#2564CF';
     ctx.beginPath();
     ctx.moveTo(r, 0);
@@ -74,10 +79,8 @@ async function generateIcon(size) {
     ctx.closePath();
     ctx.fill();
 
-    // White checkmark
-    const lw = size * 0.1;
     ctx.strokeStyle = '#FFFFFF';
-    ctx.lineWidth = lw;
+    ctx.lineWidth = size * 0.1;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.beginPath();
@@ -88,14 +91,10 @@ async function generateIcon(size) {
 
     const blob = await canvas.convertToBlob({ type: 'image/png' });
     return new Response(blob, {
-      headers: {
-        'Content-Type': 'image/png',
-        'Cache-Control': 'public, max-age=86400',
-      }
+      headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' }
     });
   } catch (err) {
-    // Fallback: redirect to SVG icon
-    return fetch('/icons/icon.svg');
+    return fetch(BASE + 'icons/icon.svg');
   }
 }
 
@@ -105,8 +104,8 @@ self.addEventListener('push', e => {
   e.waitUntil(
     self.registration.showNotification(data.title || '할 일 알림', {
       body: data.body || '',
-      icon: '/icons/icon-192.png',
-      badge: '/icons/icon-192.png',
+      icon: BASE + 'icons/icon-192.png',
+      badge: BASE + 'icons/icon-192.png',
       tag: data.tag || 'todo',
     })
   );
@@ -114,5 +113,5 @@ self.addEventListener('push', e => {
 
 self.addEventListener('notificationclick', e => {
   e.notification.close();
-  e.waitUntil(clients.openWindow('/'));
+  e.waitUntil(clients.openWindow(BASE));
 });
