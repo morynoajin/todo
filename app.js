@@ -11,6 +11,7 @@ let S = {
   cfg: {
     dark: false, view: 'myday', sort: 'created',
     showDone: true, addMyDay: false,
+    dailyNotif: false, dailyNotifTime: '09:00', dailyNotifLastSent: null,
   },
   sel: null,        // selected task id
   q: '',            // search query
@@ -1105,6 +1106,235 @@ function registerSW() {
   }
 }
 
+/* ========== URL PARAMS (shortcuts / share target) ========== */
+let _dailyNotifTimer = null; // outside state so it's not serialized
+
+function handleURLParams() {
+  const params = new URLSearchParams(location.search);
+  if (!params.toString()) return;
+
+  // Clean URL immediately so refresh doesn't re-trigger
+  history.replaceState(null, '', location.pathname);
+
+  // ── Share Target (공유받기) ──────────────────────────────────
+  const shareTitle = params.get('title');
+  const shareText  = params.get('text');
+  const shareUrl   = params.get('url');
+  if (shareTitle || shareText || shareUrl) {
+    // Derive task title and note from shared content
+    const title = (shareTitle || shareText?.split('\n')[0] || shareUrl || '공유된 항목')
+                    .trim().slice(0, 200);
+    const noteParts = [];
+    if (shareTitle && shareText) noteParts.push(shareText); // text becomes note when title exists
+    if (shareUrl) noteParts.push(shareUrl);
+    const note = noteParts.join('\n').trim();
+    setTimeout(() => showShareModal(title, note), 450);
+    return;
+  }
+
+  // ── View shortcuts ───────────────────────────────────────────
+  const view = params.get('view');
+  if (view && ['myday','important','planned','all'].includes(view)) {
+    switchView(view);
+  }
+
+  // ── Action shortcuts ─────────────────────────────────────────
+  const action = params.get('action');
+  if (action === 'add') {
+    setTimeout(() => document.getElementById('new-task-input')?.focus(), 450);
+  } else if (action === 'search') {
+    setTimeout(() => {
+      if (window.innerWidth < 768 && !sidebarOpen) toggleSidebar();
+      document.getElementById('search-input')?.focus();
+    }, 450);
+  }
+}
+
+/* ========== SHARE MODAL ========== */
+function showShareModal(title, note) {
+  showModal(`
+    <div class="modal-header">
+      <span>공유된 내용 추가</span>
+      <button onclick="closeModal()" class="icon-btn">✕</button>
+    </div>
+    <div class="modal-body">
+      <label class="modal-label">작업 제목</label>
+      <input class="modal-input" id="share-title" value="${esc(title)}"
+        onkeydown="if(event.key==='Enter')submitShare()">
+      <label class="modal-label">메모</label>
+      <textarea class="modal-input" id="share-note" rows="3"
+        style="resize:vertical;min-height:72px">${esc(note)}</textarea>
+      <label class="modal-label">목록 (선택)</label>
+      <select class="modal-select" id="share-list">
+        <option value="">없음</option>
+        ${S.lists.map(l => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal()">취소</button>
+      <button class="btn btn-primary" onclick="submitShare()">추가</button>
+    </div>`);
+  setTimeout(() => { const el = document.getElementById('share-title'); el?.focus(); el?.select(); }, 100);
+}
+
+function submitShare() {
+  const title  = document.getElementById('share-title')?.value?.trim();
+  const note   = document.getElementById('share-note')?.value || '';
+  const listId = document.getElementById('share-list')?.value || null;
+  if (!title) return;
+  const task = {
+    id: uid(), listId: listId || null, title,
+    completed: false, important: false, note,
+    dueDate: null, reminder: null, repeat: null,
+    repeatInterval: 1, repeatUnit: 'days',
+    myDay: false, myDayDate: null,
+    subtasks: [], createdAt: nowISO(), completedAt: null,
+  };
+  S.tasks.unshift(task);
+  save(); render(); closeModal();
+  setTimeout(() => openDetail(task.id), 100);
+}
+
+/* ========== DAILY NOTIFICATION ========== */
+function scheduleDailyNotification() {
+  clearTimeout(_dailyNotifTimer);
+  if (!S.cfg.dailyNotif || Notification.permission !== 'granted') return;
+
+  const [h, m] = S.cfg.dailyNotifTime.split(':').map(Number);
+  const hh = String(h).padStart(2, '0'), mm = String(m).padStart(2, '0');
+  const todayKST = getKSTDate();
+
+  // Build today's notification time in KST
+  let notifTime = new Date(`${todayKST}T${hh}:${mm}:00+09:00`);
+
+  // If already past, aim for tomorrow
+  if (notifTime <= new Date()) {
+    const tom = dateDt(todayKST); tom.setUTCDate(tom.getUTCDate() + 1);
+    notifTime = new Date(`${tom.toISOString().slice(0, 10)}T${hh}:${mm}:00+09:00`);
+  }
+
+  _dailyNotifTimer = setTimeout(() => {
+    sendDailyNotification();
+    scheduleDailyNotification(); // reschedule for next day
+  }, notifTime - new Date());
+}
+
+function checkDailyNotification() {
+  // On app open: fire missed notification (within 1 h window)
+  if (!S.cfg.dailyNotif || Notification.permission !== 'granted') return;
+  if (S.cfg.dailyNotifLastSent === getKSTDate()) return; // already sent today
+
+  const [h, m] = S.cfg.dailyNotifTime.split(':').map(Number);
+  const hh = String(h).padStart(2, '0'), mm = String(m).padStart(2, '0');
+  const notifTime = new Date(`${getKSTDate()}T${hh}:${mm}:00+09:00`);
+  const now = new Date();
+  // Fire if we missed it by up to 1 hour
+  if (now >= notifTime && now - notifTime < 3600000) {
+    sendDailyNotification();
+  }
+}
+
+function sendDailyNotification() {
+  const t = getKSTDate();
+  const count = S.tasks.filter(x => !x.completed && x.myDay && x.myDayDate === t).length;
+  const body  = count > 0 ? `오늘 할 일 ${count}개 있어요` : '오늘 할 일을 추가해보세요!';
+
+  try {
+    const n = new Notification('할 일', {
+      body, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png',
+      tag: 'daily-notif', renotify: true,
+    });
+    n.onclick = () => { window.focus(); switchView('myday'); n.close(); };
+  } catch(e) {
+    showBanner(`☀️ ${body}`);
+  }
+
+  S.cfg.dailyNotifLastSent = t;
+  save();
+}
+
+/* ========== SETTINGS MODAL ========== */
+function showSettingsModal() {
+  const t = getKSTDate();
+  const todayCount = S.tasks.filter(x => !x.completed && x.myDay && x.myDayDate === t).length;
+
+  showModal(`
+    <div class="modal-header">
+      <span>설정</span>
+      <button onclick="closeModal()" class="icon-btn">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="settings-section">
+        <span class="settings-label">일일 알림</span>
+        <div class="toggle-row">
+          <label>매일 아침 할 일 알림 받기</label>
+          <label class="toggle-switch">
+            <input type="checkbox" id="notif-toggle" ${S.cfg.dailyNotif ? 'checked' : ''}
+              onchange="onNotifToggle(this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div id="notif-time-wrap" style="${S.cfg.dailyNotif ? '' : 'display:none'}">
+          <label class="modal-label">알림 시간</label>
+          <input class="modal-input time-input" type="time" id="notif-time"
+            value="${S.cfg.dailyNotifTime}">
+          <p class="settings-hint">
+            알림 클릭 시 '나의 하루' 화면으로 이동합니다.<br>
+            현재 오늘 할 일: <strong>${todayCount}개</strong>
+          </p>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <span class="settings-label">앱 단축키</span>
+        <p class="settings-hint">
+          홈 화면 아이콘을 <strong>길게 누르면</strong> 빠른 메뉴가 나타납니다.<br>
+          • 새 작업 추가 &nbsp;• 오늘 할 일 &nbsp;• 중요 작업 &nbsp;• 검색
+        </p>
+      </div>
+
+      <div class="settings-section">
+        <span class="settings-label">공유 받기</span>
+        <p class="settings-hint">
+          다른 앱에서 텍스트/링크를 공유할 때<br>
+          <strong>'할 일'</strong> 앱을 선택하면 새 작업으로 자동 추가됩니다.
+        </p>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal()">닫기</button>
+      <button class="btn btn-primary" onclick="saveSettings()">저장</button>
+    </div>`);
+}
+
+function onNotifToggle(checked) {
+  document.getElementById('notif-time-wrap').style.display = checked ? '' : 'none';
+}
+
+function saveSettings() {
+  const dailyNotif     = document.getElementById('notif-toggle')?.checked ?? false;
+  const dailyNotifTime = document.getElementById('notif-time')?.value || '09:00';
+
+  S.cfg.dailyNotif     = dailyNotif;
+  S.cfg.dailyNotifTime = dailyNotifTime;
+  save();
+  closeModal();
+
+  clearTimeout(_dailyNotifTimer);
+  if (dailyNotif) {
+    requestNotifPermission().then(() => {
+      if (Notification.permission === 'granted') {
+        checkDailyNotification();
+        scheduleDailyNotification();
+      } else {
+        showBanner('알림 권한을 허용해야 일일 알림을 받을 수 있어요.');
+        S.cfg.dailyNotif = false;
+        save();
+      }
+    });
+  }
+}
+
 /* ========== OVERLAY ========== */
 function overlayClick() {
   if (S.sel !== null) {
@@ -1147,7 +1377,10 @@ function init() {
   render();
   scheduleAllReminders();
   checkMissedReminders();
+  checkDailyNotification();
+  scheduleDailyNotification();
   registerSW();
+  handleURLParams();
 
   // KST 자정에 My Day 목록 갱신 (KST 다음날 00:00+09:00 = UTC 전날 15:00)
   const tomorrowKST = dateDt(todayStr()); tomorrowKST.setUTCDate(tomorrowKST.getUTCDate() + 1);
