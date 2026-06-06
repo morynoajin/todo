@@ -103,15 +103,24 @@ function switchView(v) {
   closeSidebar(); closeDetail(); save(); render();
 }
 
+// 나의 하루에 표시될 조건:
+//   1) 마감일이 오늘(KST)인 작업  OR
+//   2) 사용자가 수동으로 "나의 하루에 추가"한 작업(myDay 플래그 + 당일)
+function isMyDayTask(task, t) {
+  return task.dueDate === t || (task.myDay && task.myDayDate === t);
+}
+
 function getViewTasks(view) {
   const t = todayStr();
-  return S.tasks.filter(task => {
-    if (view === 'myday')     return task.myDay && task.myDayDate === t;
+  const result = S.tasks.filter(task => {
+    if (view === 'myday')     return isMyDayTask(task, t);
     if (view === 'important') return task.important;
     if (view === 'planned')   return !!task.dueDate;
     if (view === 'all')       return true;
     return task.listId === view.replace('list-', '');
   });
+
+  return result;
 }
 
 function filterTasks(tasks) {
@@ -307,7 +316,7 @@ function updateCounts() {
   const t = todayStr();
   const active = S.tasks.filter(x => !x.completed);
   const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val || ''; };
-  set('cnt-myday',     active.filter(x => x.myDay && x.myDayDate === t).length || '');
+  set('cnt-myday',     active.filter(x => isMyDayTask(x, t)).length || '');
   set('cnt-important', active.filter(x => x.important).length || '');
   set('cnt-planned',   active.filter(x => x.dueDate).length || '');
   set('cnt-all',       active.length || '');
@@ -1236,7 +1245,7 @@ function checkDailyNotification() {
 
 function sendDailyNotification() {
   const t = getKSTDate();
-  const count = S.tasks.filter(x => !x.completed && x.myDay && x.myDayDate === t).length;
+  const count = S.tasks.filter(x => !x.completed && isMyDayTask(x, t)).length;
   const body  = count > 0 ? `오늘 할 일 ${count}개 있어요` : '오늘 할 일을 추가해보세요!';
 
   try {
@@ -1256,7 +1265,7 @@ function sendDailyNotification() {
 /* ========== SETTINGS MODAL ========== */
 function showSettingsModal() {
   const t = getKSTDate();
-  const todayCount = S.tasks.filter(x => !x.completed && x.myDay && x.myDayDate === t).length;
+  const todayCount = S.tasks.filter(x => !x.completed && isMyDayTask(x, t)).length;
 
   showModal(`
     <div class="modal-header">
